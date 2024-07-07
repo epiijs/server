@@ -2,13 +2,13 @@ import http, { Server } from 'http';
 
 import verifyConfig, { IAppConfig, IMaybeAppConfig } from '@epiijs/config';
 
+import { buildLogging } from './logging.js';
+import { buildContext } from './context.js';
 import { mountRouting } from './routing.js';
 import { mountService } from './service.js';
-import { buildContext, getVerboseOutput } from './runtime.js';
 
 interface IContextForStartup {
   getAppConfig: () => IAppConfig;
-  getAppLogger: (...args: unknown[]) => void;
 }
 
 interface IStartupResult {
@@ -17,31 +17,30 @@ interface IStartupResult {
 
 export async function startServer(config: IMaybeAppConfig): Promise<IStartupResult> {
   const verifiedConfig = verifyConfig(config);
-  const verbose = getVerboseOutput(verifiedConfig);
+  const logging = buildLogging(verifiedConfig);
 
   const {
     handleRequest,
     disposeRouter
   } = await mountRouting(verifiedConfig);
   const {
-    spawnInjector
+    buildInjectorForProcess,
+    buildInjectorForSession
   } = await mountService(verifiedConfig);
   
-  const processInjector = spawnInjector();
+  const processInjector = buildInjectorForProcess();
 
   const httpServer = http.createServer((request, response) => {
     const context = buildContext();
 
     context.install('getAppConfig', () => {
-      return verifiedConfig;
+      return Object.freeze(verifiedConfig);
     }, undefined);
 
-    context.install('getAppLogger', verbose, undefined);
-
-    const sessionInjector = spawnInjector(processInjector, context);
+    const sessionInjector = buildInjectorForSession(processInjector, context);
 
     handleRequest(request, response, context).catch(error => {
-      console.error(error);
+      logging.error(error);
     }).finally(() => {
       sessionInjector.dispose();
       context.dispose();
@@ -51,12 +50,12 @@ export async function startServer(config: IMaybeAppConfig): Promise<IStartupResu
   httpServer.on('close', () => {
     processInjector.dispose();
     disposeRouter();
-    verbose('server closed');
+    logging.info('server closed');
   });
 
   const serverPort = verifiedConfig.port.server;
   httpServer.listen(serverPort, () => {
-    verbose(`server started on port ${serverPort}`);
+    logging.info(`server started on port ${serverPort}`);
   });
 
   return {

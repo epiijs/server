@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { stat, readFile } from 'fs/promises';
 import path from 'path';
+
 import mime from 'mime-types';
 
 import { ActionResult, HandlerFn } from '../server/handler.js';
@@ -37,16 +38,14 @@ function createHandlerForStaticFiles(options: IHandlerOptionsForStaticFiles): Ha
       options.onDispose?.();
     });
 
-    if (fileContent) {
-      return {
-        status: 200,
-        headers: {
-          'content-type': contentType,
-          ...fileTooLarge ? { 'content-length': fileStat.size.toString() } : undefined
-        },
-        content: fileContent
-      };
-    }
+    return {
+      status: 200,
+      headers: {
+        'content-type': contentType,
+        ...fileTooLarge ? { 'content-length': fileStat.size.toString() } : undefined
+      },
+      content: fileContent
+    };
   };
 
   return handlerFn;

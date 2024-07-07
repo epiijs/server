@@ -1,10 +1,10 @@
 import path from 'path';
 
-import { glob } from 'glob';
 import { IAppConfig } from '@epiijs/config';
 import { IInjector, ServiceFactoryFn, ServiceLocator, createInjector } from '@epiijs/inject';
 
-import { IContextInner, importModule } from './runtime.js';
+import { findAllModuleFiles, getModuleDirPath, importModule } from './require.js';
+import { IContextInner } from './context.js';
 
 enum EServiceScope {
   Process = 'Process',
@@ -54,9 +54,8 @@ async function loadServiceModule({ dirName, fileName }: {
 }
 
 async function findAllServices(config: IAppConfig): Promise<IRefService[]> {
-  const serviceDir = path.join(config.root, config.dirs.target, config.dirs.server, 'services');
-  const serviceFilePattern = `${serviceDir}/**/index.js`;
-  const serviceFileNames = await glob(serviceFilePattern);
+  const serviceDir = getModuleDirPath(config, 'servies');
+  const serviceFileNames = await findAllModuleFiles(serviceDir);
   const services: IRefService[] = [];
   for (const serviceFileName of serviceFileNames) {
     const service = await loadServiceModule({
@@ -71,11 +70,11 @@ async function findAllServices(config: IAppConfig): Promise<IRefService[]> {
   return services;
 }
 
-interface IHookSelf {
+interface IHookBind {
   services: ServiceLocator;
 }
 
-function useService({ services }: IHookSelf, name: string): unknown {
+function useService({ services }: IHookBind, name: string): unknown {
   return services[name];
 }
 
@@ -83,28 +82,30 @@ interface IContextForService {
   useService: <T = unknown>(name: string) => T;
 }
 
-interface IServiceRegistry {
-  spawnInjector: (inherit?: IInjector, context?: IContextInner) => IInjector;
-}
-
-export async function mountService(config: IAppConfig): Promise<IServiceRegistry> {
+export async function mountService(config: IAppConfig): Promise<{
+  buildInjectorForProcess: () => IInjector;
+  buildInjectorForSession: (inherit: IInjector, context: IContextInner) => IInjector;
+}> {
   const services = await findAllServices(config);
-  const servicesForProcess = services.filter(service => service.options.scope === EServiceScope.Process);
-  const servicesForSession = services.filter(service => service.options.scope === EServiceScope.Session);
+
   return {
-    spawnInjector: (inherit, context) => {
+    buildInjectorForProcess: () => {
       const injector = createInjector();
-      if (inherit) {
-        injector.inherit(inherit);
-        servicesForSession.forEach(service => {
-          injector.provide(service.options.name, service.default);
-        });
-        context?.install<IHookSelf>('useService', useService, { services: injector.service() as ServiceLocator });
-      } else {
-        servicesForProcess.forEach(service => {
-          injector.provide(service.options.name, service.default);
-        });
-      }
+      const servicesForProcess = services.filter(service => service.options.scope === EServiceScope.Process);
+      servicesForProcess.forEach(service => {
+        injector.provide(service.options.name, service.default);
+      });
+      return injector;
+    },
+
+    buildInjectorForSession: (inherit, context) => {
+      const injector = createInjector();
+      injector.inherit(inherit);
+      const servicesForSession = services.filter(service => service.options.scope === EServiceScope.Session);
+      servicesForSession.forEach(service => {
+        injector.provide(service.options.name, service.default);
+      });
+      context?.install<IHookBind>('useService', useService, { services: injector.service() as ServiceLocator });
       return injector;
     }
   };

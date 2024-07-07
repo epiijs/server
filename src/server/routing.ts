@@ -2,15 +2,11 @@ import http from 'http';
 import path from 'path';
 
 import createFindMyWayRouter, { HTTPVersion, Handler } from 'find-my-way';
-import { glob } from 'glob';
-
 import { IAppConfig } from '@epiijs/config';
+import { HTTPMethod, IOutgoingMessage, applyOutgoingMessage, buildIncomingMessage, buildOutgoingMessage } from '@epiijs/httply';
 
 import { ActionFnInner, performAction } from './handler.js';
-import { IOutgoingMessage, applyOutgoingMessage, buildIncomingMessage, buildOutgoingMessage } from './message.js';
-import { importModule } from './runtime.js';
-
-type HTTPMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
+import { findAllModuleFiles, getModuleDirPath, importModule } from './require.js';
 
 interface IRoute {
   method: HTTPMethod;
@@ -21,7 +17,7 @@ interface IRefAction {
   default: ActionFnInner;
   options: {
     routes: IRoute[];
-    global?: boolean;
+    global?: 'error';
   };
 }
 
@@ -63,9 +59,8 @@ async function loadActionModule({ dirName, fileName }: {
 }
 
 async function findAllActions(config: IAppConfig): Promise<IRefAction[]> {
-  const actionDir = path.join(config.root, config.dirs.target, config.dirs.server, 'actions');
-  const actionFilePattern = `${actionDir}/**/index.js`;
-  const actionFileNames = await glob(actionFilePattern);
+  const actionDir = getModuleDirPath(config, 'actions');
+  const actionFileNames = await findAllModuleFiles(actionDir);
   const actions: IRefAction[] = [];
   for (const actionFileName of actionFileNames) {
     const action = await loadActionModule({
@@ -80,12 +75,10 @@ async function findAllActions(config: IAppConfig): Promise<IRefAction[]> {
   return actions;
 }
 
-interface IRouter {
+export async function mountRouting(config: IAppConfig): Promise<{
   handleRequest: (request: http.IncomingMessage, response: http.ServerResponse, context: unknown) => Promise<void>;
   disposeRouter: () => void;
-}
-
-export async function mountRouting(config: IAppConfig): Promise<IRouter> {
+}> {
   const router = createFindMyWayRouter({
     ignoreTrailingSlash: true
   });
@@ -106,12 +99,7 @@ export async function mountRouting(config: IAppConfig): Promise<IRouter> {
       router.on(route.method, route.path, routeFn);
       // register global routes
       if (route.method === 'GET' && global) {
-        const routeKey = {
-          '/error': 'error'
-        }[route.path];
-        if (routeKey) {
-          globalRoutes[routeKey] = routeFn;
-        }
+        globalRoutes[global] = routeFn;
       }
     });
   });
@@ -120,7 +108,7 @@ export async function mountRouting(config: IAppConfig): Promise<IRouter> {
     handleRequest: async (request, response, context): Promise<void> => {
       interface IOutgoingMessageWithError extends IOutgoingMessage {
         error?: unknown;
-      };
+      }
 
       if (!request.url) { request.url = '/'; }
 
@@ -141,15 +129,13 @@ export async function mountRouting(config: IAppConfig): Promise<IRouter> {
         outgoingMessage = catchError(undefined, 404);
       }
 
-      if (outgoingMessage.error) {
-        if (globalRoutes.error) {
-          // sorry to copy outgoingMessage as fake params type
-          const params = { ...outgoingMessage } as unknown as Record<string, string>;
-          outgoingMessage = await globalRoutes.error(request, response, params, context, {}).catch((error: unknown) => {
-            console.error('error occurred in global error handling', error);
-            return catchError(error);
-          });
-        }
+      if (globalRoutes.error) {
+        // sorry to copy outgoingMessage as fake params type
+        const params = outgoingMessage as unknown as Record<string, string>;
+        outgoingMessage = await globalRoutes.error(request, response, params, context, {}).catch((error: unknown) => {
+          console.error('error occurred in global error action', error);
+          return catchError(error);
+        });
       }
 
       if (!outgoingMessage) {
@@ -166,8 +152,6 @@ export async function mountRouting(config: IAppConfig): Promise<IRouter> {
 }
 
 export type {
-  HTTPMethod,
-  IRouter,
   ActionDeclareResult,
   ActionDeclareFn
 };
