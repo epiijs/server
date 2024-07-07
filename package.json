@@ -1,6 +1,6 @@
 {
   "name": "@epiijs/server",
-  "version": "3.3.2",
+  "version": "3.4.0",
   "description": "A simple server framework.",
   "engines": {
     "node": ">=20.0.0"
@@ -30,17 +30,17 @@
   },
   "homepage": "https://github.com/epiijs/server#readme",
   "devDependencies": {
-    "@epiijs/eslint-config": "^0.1.4",
+    "@epiijs/eslint-config": "^1.0.1",
     "@types/mime-types": "^2.1.4",
-    "@types/node": "^20.11.16",
-    "eslint": "^8.56.0"
+    "@types/node": "^20.17.32",
+    "eslint": "^9.25.1"
   },
   "dependencies": {
-    "@epiijs/config": "^0.5.0",
-    "@epiijs/inject": "^0.7.1",
-    "bl": "^6.0.10",
-    "find-my-way": "^8.1.0",
-    "glob": "^10.3.10",
+    "@epiijs/config": "^0.7.0",
+    "@epiijs/httply": "^0.1.0",
+    "@epiijs/inject": "^0.8.0",
+    "find-my-way": "^9.3.0",
+    "glob": "^11.0.2",
     "mime-types": "^2.1.35"
   }
 }
