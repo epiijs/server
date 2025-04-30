@@ -13,7 +13,6 @@ export function buildLogging(config: IAppConfig): {
 } {
   const loggingConfig = config.side.logging as IConfigForLogging | undefined;
   if (loggingConfig?.silent) {
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
     const emptyFn = (): void => {};
     return {
       error: emptyFn,
