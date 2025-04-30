@@ -54,7 +54,7 @@ async function loadServiceModule({ dirName, fileName }: {
 }
 
 async function findAllServices(config: IAppConfig): Promise<IRefService[]> {
-  const serviceDir = getModuleDirPath(config, 'servies');
+  const serviceDir = getModuleDirPath(config, 'services');
   const serviceFileNames = await findAllModuleFiles(serviceDir);
   const services: IRefService[] = [];
   for (const serviceFileName of serviceFileNames) {
