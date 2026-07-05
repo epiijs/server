@@ -1,148 +1,134 @@
-import http from 'http';
-import path from 'path';
+import http from 'node:http';
+import path from 'node:path';
 
-import createFindMyWayRouter, { HTTPVersion, Handler } from 'find-my-way';
 import { IAppConfig } from '@epiijs/config';
-import { HTTPMethod, IOutgoingMessage, applyOutgoingMessage, buildIncomingMessage, buildOutgoingMessage } from '@epiijs/httply';
+import {
+  HTTPMethod, OutgoingMessage
+} from '@epiijs/httply';
+import type { ServiceLocator } from '@epiijs/inject';
+import createFindMyWayRouter from 'find-my-way';
 
-import { ActionFnInner, performAction } from './handler.js';
-import { findAllModuleFiles, getModuleDirPath, importModule } from './require.js';
+import {
+  ComposedHandler, composeHandlers, HandlerFn, IncomingMessageWithParams
+} from './handler.js';
+import { createLogger } from './logging.js';
+import {
+  findAllModuleFiles, getModuleDirPath, importModule
+} from './require.js';
 
 interface IRoute {
   method: HTTPMethod;
   path: string;
 }
 
-interface IRefAction {
-  default: ActionFnInner;
+type HandlerDeclareResult = {
+  routes: IRoute[];
+  stacks?: HandlerFn[];
+};
+
+interface IRefHandler {
+  default: HandlerFn;
   options: {
     routes: IRoute[];
-    global?: 'error';
+    stacks: HandlerFn[];
   };
 }
 
-type ActionDeclareResult = IRefAction['options'];
-type ActionDeclareFn = () => ActionDeclareResult;
-
-async function loadActionModule({ dirName, fileName }: {
+async function loadHandlerModule({ dirName, fileName }: {
   dirName: string;
   fileName: string;
-}): Promise<IRefAction | undefined> {
-  interface IActionModule {
-    default: ActionFnInner;
-    declare?: ActionDeclareFn;
+}): Promise<IRefHandler | undefined> {
+  interface IHandlerModule {
+    default: HandlerFn;
+    declare?: () => HandlerDeclareResult;
   }
   const relativePath = path.relative(dirName, fileName);
-  const actionModule = await importModule(fileName) as IActionModule;
+  const handlerModule = await importModule(fileName) as IHandlerModule;
   const {
-    default: maybeActionFn,
+    default: maybeHandlerFn,
     declare
-  } = actionModule;
-  if (typeof maybeActionFn !== 'function') {
-    console.error(`action.default should be function at ${relativePath}`);
+  } = handlerModule;
+  if (typeof maybeHandlerFn !== 'function') {
+    const logger = createLogger();
+    logger.error(`handler.default should be function at ${relativePath}`);
     return;
   }
-  const maybeOptions = typeof declare === 'function' ? declare() : undefined;
+  const maybeDeclare = typeof declare === 'function' ? declare() : undefined;
   const defaultPath = '/' + relativePath.replace(/\/?index\.js$/, '');
-  const refAction: IRefAction = {
-    default: maybeActionFn,
+
+  // declare() 存在时使用声明的路由，否则使用文件系统兜底
+  const routes: IRoute[] = maybeDeclare
+    ? maybeDeclare.routes.map(e => ({ method: e.method as HTTPMethod, path: e.path.replace(/\$/g, ':') }))
+    : [{ method: 'GET' as HTTPMethod, path: defaultPath.replace(/\$/g, ':') }];
+
+  const refHandler: IRefHandler = {
+    default: maybeHandlerFn,
     options: {
-      ...maybeOptions,
-      routes: (maybeOptions?.routes || []).concat([
-        { method: 'GET', path: defaultPath }
-      ]).map(e => (
-        { method: e.method, path: e.path.replace(/\$/g, ':') }
-      ))
+      routes,
+      stacks: maybeDeclare?.stacks || []
     }
   };
-  return refAction;
+  return refHandler;
 }
 
-async function findAllActions(config: IAppConfig): Promise<IRefAction[]> {
-  const actionDir = getModuleDirPath(config, 'actions');
-  const actionFileNames = await findAllModuleFiles(actionDir);
-  const actions: IRefAction[] = [];
-  for (const actionFileName of actionFileNames) {
-    const action = await loadActionModule({
-      dirName: actionDir,
-      fileName: actionFileName
+async function findAllHandlers(config: IAppConfig): Promise<IRefHandler[]> {
+  const handlerDir = getModuleDirPath(config, 'handlers');
+  const handlerFileNames = await findAllModuleFiles(handlerDir);
+  const handlers: IRefHandler[] = [];
+  for (const handlerFileName of handlerFileNames) {
+    const handler = await loadHandlerModule({
+      dirName: handlerDir,
+      fileName: handlerFileName
     });
-    if (action) {
-      actions.push(action);
+    if (handler) {
+      handlers.push(handler);
     }
   }
-  // TODO: watch & load new actions
-  return actions;
+  // TODO: watch & load new handlers
+  return handlers;
 }
 
-export async function mountRouting(config: IAppConfig): Promise<{
-  handleRequest: (request: http.IncomingMessage, response: http.ServerResponse, context: unknown) => Promise<void>;
+async function mountRouting(config: IAppConfig): Promise<{
+  handleRequest: (request: http.IncomingMessage, response: http.ServerResponse, serviceLocator: ServiceLocator) => Promise<void>;
   disposeRouter: () => void;
 }> {
   const router = createFindMyWayRouter({
     ignoreTrailingSlash: true
   });
-  const globalRoutes: Record<string, Handler<HTTPVersion.V1> | undefined> = {
-    error: undefined
-  };
 
-  const actions = await findAllActions(config);
-  actions.forEach(action => {
-    const routeFn: Handler<HTTPVersion.V1> = async (request, response, params, context) => {
-      const incomingMessage = buildIncomingMessage(request, params);
-      const outgoingMessage = await performAction(action.default, incomingMessage, context);
-      return outgoingMessage;
-    };
-    const { routes, global } = action.options;
-    routes.forEach(route => {
-      // register routes to find-my-way
-      router.on(route.method, route.path, routeFn);
-      // register global routes
-      if (route.method === 'GET' && global) {
-        globalRoutes[global] = routeFn;
-      }
+  // 注册路由：ComposedHandler 签名与 find-my-way 的 handler 不兼容，存入 store
+  // 请求时通过 router.find() 取出 store 中的 ComposedHandler 执行
+  const noopHandler = (): void => {};
+  const handlers = await findAllHandlers(config);
+  handlers.forEach(handler => {
+    const composed: ComposedHandler = composeHandlers(handler.options.stacks, handler.default);
+    handler.options.routes.forEach(route => {
+      router.on(route.method, route.path, noopHandler, composed);
     });
   });
 
   return {
-    handleRequest: async (request, response, context): Promise<void> => {
-      interface IOutgoingMessageWithError extends IOutgoingMessage {
-        error?: unknown;
+    handleRequest: async (request, response, serviceLocator): Promise<void> => {
+      if (!request.url) {
+        request.url = '/';
       }
-
-      if (!request.url) { request.url = '/'; }
-
-      const catchError = (error: unknown, status?: number): IOutgoingMessageWithError => {
-        const message = buildOutgoingMessage({ status: status || 500 }) as IOutgoingMessageWithError;
-        message.error = error;
-        return message;
-      };
-
-      let outgoingMessage: IOutgoingMessageWithError;
-
       const findResult = router.find(request.method as HTTPMethod, request.url);
+      let outgoingMessage: OutgoingMessage;
       if (findResult) {
-        const { handler, params } = findResult;
-        // TODO: find out why find-my-way requires search-params
-        outgoingMessage = await handler(request, response, params, context, {}).catch(catchError);
+        const { params, store } = findResult;
+        const composed = store as ComposedHandler;
+        const message = new IncomingMessageWithParams(request, params as Record<string, string>);
+        try {
+          const result = await composed(message, serviceLocator);
+          outgoingMessage = OutgoingMessage.from(result);
+        } catch (error) {
+          createLogger().error(error);
+          outgoingMessage = new OutgoingMessage({ status: 500 });
+        }
       } else {
-        outgoingMessage = catchError(undefined, 404);
+        outgoingMessage = new OutgoingMessage({ status: 404 });
       }
-
-      if (globalRoutes.error) {
-        // sorry to copy outgoingMessage as fake params type
-        const params = outgoingMessage as unknown as Record<string, string>;
-        outgoingMessage = await globalRoutes.error(request, response, params, context, {}).catch((error: unknown) => {
-          console.error('error occurred in global error action', error);
-          return catchError(error);
-        });
-      }
-
-      if (!outgoingMessage) {
-        outgoingMessage = buildOutgoingMessage({ status: 404 });
-      }
-
-      return applyOutgoingMessage(outgoingMessage, response);
+      await outgoingMessage.applyToResponse(response);
     },
 
     disposeRouter: () => {
@@ -151,7 +137,10 @@ export async function mountRouting(config: IAppConfig): Promise<{
   };
 }
 
+export {
+  mountRouting
+};
+
 export type {
-  ActionDeclareResult,
-  ActionDeclareFn
+  HandlerDeclareResult
 };

@@ -1,10 +1,14 @@
-import fs from 'fs';
-import { stat, readFile } from 'fs/promises';
-import path from 'path';
+import fs from 'node:fs';
+import {
+  readFile, stat
+} from 'node:fs/promises';
+import path from 'node:path';
 
 import mime from 'mime-types';
 
-import { ActionResult, HandlerFn } from '../server/handler.js';
+import type {
+  HandlerFn, HandlerResult 
+} from '../server/handler.js';
 
 interface IHandlerOptionsForStaticFiles {
   fileName?: string;
@@ -15,7 +19,7 @@ interface IHandlerOptionsForStaticFiles {
 }
 
 function createHandlerForStaticFiles(options: IHandlerOptionsForStaticFiles): HandlerFn {
-  const handlerFn: HandlerFn = async (dispose): Promise<ActionResult> => {
+  const handlerFn: HandlerFn = async function (): Promise<HandlerResult> {
     let filePath = '';
     if (options.filePath) {
       filePath = options.filePath;
@@ -34,18 +38,18 @@ function createHandlerForStaticFiles(options: IHandlerOptionsForStaticFiles): Ha
     const fileContent = fileTooLarge ? fs.createReadStream(filePath) : await readFile(filePath);
     const contentType = options.contentType || mime.contentType(path.extname(filePath)) || 'application/octet-stream';
 
-    dispose(() => {
+    try {
+      return {
+        status: 200,
+        headers: {
+          'content-type': contentType,
+          ...fileTooLarge ? { 'content-length': fileStat.size.toString() } : {}
+        },
+        content: fileContent
+      };
+    } finally {
       options.onDispose?.();
-    });
-
-    return {
-      status: 200,
-      headers: {
-        'content-type': contentType,
-        ...fileTooLarge ? { 'content-length': fileStat.size.toString() } : undefined
-      },
-      content: fileContent
-    };
+    }
   };
 
   return handlerFn;

@@ -3,8 +3,8 @@
 .vscode
 package-lock.json
 src/**/*.js
-build/
-coverage/
+/build/
+/coverage/
 
 # Logs
 logs
