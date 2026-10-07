@@ -1,13 +1,15 @@
 import path from 'node:path';
 
-import { IAppConfig } from '@epiijs/config';
+import type { IAppConfig } from '@epiijs/config';
 import {
-  createInjector, IInjector, ServiceFactoryFn, ServiceLocator
+  createInjector, IInjector, IServiceLocator,
+  ServiceFactoryFn
 } from '@epiijs/inject';
 
 import { createLogger } from './logging.js';
 import {
-  findAllModuleFiles, getModuleDirPath, importModule
+  findAllModuleFilePaths, getModuleDirPath, importDeclareModule,
+  RegExpForDeclareModuleFileName
 } from './require.js';
 
 /**
@@ -26,20 +28,12 @@ enum EServiceScope {
 }
 
 /**
- * Service 引用，包含工厂函数和注册选项
- */
-interface IRefService {
-  default: ServiceFactoryFn;
-  options: {
-    name: string;
-    scope: EServiceScope;
-  };
-}
-
-/**
  * Service 声明结果，由模块的 declare() 函数返回
  */
-type ServiceDeclareResult = IRefService['options'];
+type ServiceDeclareResult = {
+  name: string;
+  scope: EServiceScope;
+};
 
 /**
  * Service 声明函数类型
@@ -47,35 +41,37 @@ type ServiceDeclareResult = IRefService['options'];
 type ServiceDeclareFn = () => ServiceDeclareResult;
 
 /**
- * 加载单个 Service 模块
- * 解析 default 导出和 declare() 声明，返回 IRefService
+ * Service 引用，包含工厂函数和注册选项
  */
-async function loadServiceModule({ dirName, fileName }: {
-  dirName: string;
-  fileName: string;
+interface IRefService {
+  default: ServiceFactoryFn;
+  options: ServiceDeclareResult;
+}
+
+/**
+ * 加载单个 Service 模块
+ */
+async function loadServiceModule({ dirPath, filePath }: {
+  dirPath: string;
+  filePath: string;
 }): Promise<IRefService | undefined> {
-  interface IServiceModule {
-    default: unknown;
-    declare?: () => IRefService['options'];
-  }
-  const relativePath = path.relative(dirName, fileName);
+  const serviceModule = await importDeclareModule<ServiceFactoryFn, ServiceDeclareResult>(filePath);
   const {
     default: maybeServiceFn,
-    declare
-  } = await importModule(fileName) as IServiceModule;
-  const serviceFn: ServiceFactoryFn = (services: ServiceLocator): unknown => {
+    options: maybeDeclare
+  } = serviceModule || {};
+  const relativePath = path.relative(dirPath, filePath);
+  const defaultName = relativePath.replace(RegExpForDeclareModuleFileName, '');
+  const serviceFn: ServiceFactoryFn = (services: IServiceLocator): unknown => {
     return typeof maybeServiceFn === 'function'
       ? maybeServiceFn(services)
       : maybeServiceFn;
   };
-  const serviceOptions = typeof declare === 'function' ? declare() : undefined;
-  const defaultName = relativePath.replace(/\/?index\.js$/, '');
   const refService: IRefService = {
     default: serviceFn,
     options: {
-      name: defaultName,
-      scope: EServiceScope.Process,
-      ...serviceOptions
+      name: maybeDeclare?.name ?? defaultName,
+      scope: maybeDeclare?.scope ?? EServiceScope.Process
     }
   };
   return refService;
@@ -83,16 +79,15 @@ async function loadServiceModule({ dirName, fileName }: {
 
 /**
  * 查找并加载所有 Service 模块
- * 扫描 services 目录下的所有 index.js 文件
  */
 async function findAllServices(config: IAppConfig): Promise<IRefService[]> {
-  const serviceDir = getModuleDirPath(config, 'services');
-  const serviceFileNames = await findAllModuleFiles(serviceDir);
+  const serviceDirPath = getModuleDirPath(config, 'services');
+  const serviceFilePaths = await findAllModuleFilePaths(serviceDirPath, '*.{js,mjs}');
   const services: IRefService[] = [];
-  for (const serviceFileName of serviceFileNames) {
+  for (const serviceFilePath of serviceFilePaths) {
     const service = await loadServiceModule({
-      dirName: serviceDir,
-      fileName: serviceFileName
+      dirPath: serviceDirPath,
+      filePath: serviceFilePath
     });
     if (service) {
       services.push(service);
@@ -102,22 +97,29 @@ async function findAllServices(config: IAppConfig): Promise<IRefService[]> {
 }
 
 /**
- * 挂载 Service 系统
- * 返回 createProcessInjector 和 createSessionInjector 工厂函数
- * findAllServices 失败时日志错误并兜底为空数组
+ * 启动依赖注入子系统
  */
-async function mountService(config: IAppConfig): Promise<{
+async function startServiceManager(config: IAppConfig, options: {
+  builtin: IServiceLocator;
+}): Promise<{
   createProcessInjector: () => IInjector;
   createSessionInjector: (inherit: IInjector) => IInjector;
 }> {
-  const services = await findAllServices(config).catch((error) => {
-    createLogger().error(error);
+  const logger = createLogger();
+  const builtinServices = options.builtin;
+  const services = (await findAllServices(config).catch((error) => {
+    logger.error(error);
     return [];
+  })).filter(service => {
+    return !Object.hasOwn(builtinServices, service.options.name);
   });
 
   return {
     createProcessInjector: () => {
       const injector = createInjector();
+      Object.entries(builtinServices).forEach(([name, instance]) => {
+        injector.provide(name, instance);
+      });
       const servicesForProcess = services.filter(service => service.options.scope === EServiceScope.Process);
       servicesForProcess.forEach(service => {
         injector.provide(service.options.name, service.default);
@@ -138,12 +140,13 @@ async function mountService(config: IAppConfig): Promise<{
 }
 
 export {
-  mountService
+  EServiceScope,
+  startServiceManager
 };
 
 export type {
+  IServiceLocator,
   ServiceDeclareFn,
   ServiceDeclareResult,
-  ServiceFactoryFn,
-  ServiceLocator
+  ServiceFactoryFn
 };

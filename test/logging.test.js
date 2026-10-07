@@ -1,4 +1,5 @@
-import assert from 'assert';
+import { describe, it } from 'vitest';
+import assert from 'node:assert';
 import { createLogger, setTransport } from '../build/server/logging.js';
 
 describe('logging', () => {

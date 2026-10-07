@@ -18,13 +18,6 @@ export default [
         projectService: true,
         tsconfigRootDir: import.meta.dirname
       }
-    },
-    rules: {
-      '@stylistic/brace-style': ['error', '1tbs', { allowSingleLine: false }],
-      '@stylistic/object-curly-newline': ['error', {
-        ImportDeclaration: { minProperties: 2, consistent: true },
-        ExportDeclaration: { minProperties: 2, consistent: true }
-      }]
     }
   }
 ];

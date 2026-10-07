@@ -1,11 +1,11 @@
 import http from 'node:http';
 import path from 'node:path';
 
-import { IAppConfig } from '@epiijs/config';
+import type { IAppConfig } from '@epiijs/config';
 import {
-  HTTPMethod, OutgoingMessage
+  HttpMethod, OutgoingMessage
 } from '@epiijs/httply';
-import type { ServiceLocator } from '@epiijs/inject';
+import type { IServiceLocator } from '@epiijs/inject';
 import createFindMyWayRouter from 'find-my-way';
 
 import {
@@ -13,72 +13,81 @@ import {
 } from './handler.js';
 import { createLogger } from './logging.js';
 import {
-  findAllModuleFiles, getModuleDirPath, importModule
+  findAllModuleFilePaths, getModuleDirPath, importDeclareModule,
+  RegExpForDeclareModuleFileName
 } from './require.js';
 
+/**
+ * 最简的路由定义
+ */
 interface IRoute {
-  method: HTTPMethod;
+  method: HttpMethod;
   path: string;
 }
 
+/**
+ * Handler 声明结果
+ */
 type HandlerDeclareResult = {
   routes: IRoute[];
-  stacks?: HandlerFn[];
+  handlers?: HandlerFn[];
 };
+
+/**
+ * Handler 声明函数类型
+ */
+type HandlerDeclareFn = () => HandlerDeclareResult;
 
 interface IRefHandler {
   default: HandlerFn;
-  options: {
-    routes: IRoute[];
-    stacks: HandlerFn[];
-  };
+  options: HandlerDeclareResult;
 }
 
-async function loadHandlerModule({ dirName, fileName }: {
-  dirName: string;
-  fileName: string;
+/**
+ * 加载单个 Handler 模块
+ */
+async function loadHandlerModule({ dirPath, filePath }: {
+  dirPath: string;
+  filePath: string;
 }): Promise<IRefHandler | undefined> {
-  interface IHandlerModule {
-    default: HandlerFn;
-    declare?: () => HandlerDeclareResult;
-  }
-  const relativePath = path.relative(dirName, fileName);
-  const handlerModule = await importModule(fileName) as IHandlerModule;
+  const handlerModule = await importDeclareModule<HandlerFn, HandlerDeclareResult>(filePath);
   const {
     default: maybeHandlerFn,
-    declare
-  } = handlerModule;
+    options: maybeDeclare
+  } = handlerModule || {};
+  const relativePath = path.relative(dirPath, filePath);
   if (typeof maybeHandlerFn !== 'function') {
     const logger = createLogger();
     logger.error(`handler.default should be function at ${relativePath}`);
     return;
   }
-  const maybeDeclare = typeof declare === 'function' ? declare() : undefined;
-  const defaultPath = '/' + relativePath.replace(/\/?index\.js$/, '');
-
-  // declare() 存在时使用声明的路由，否则使用文件系统兜底
+  const defaultPath = '/' + relativePath.replace(RegExpForDeclareModuleFileName, '');
   const routes: IRoute[] = maybeDeclare
-    ? maybeDeclare.routes.map(e => ({ method: e.method as HTTPMethod, path: e.path.replace(/\$/g, ':') }))
-    : [{ method: 'GET' as HTTPMethod, path: defaultPath.replace(/\$/g, ':') }];
-
+    // 优先使用 declare() 定义的路由声明
+    ? maybeDeclare.routes.map(e => ({ method: e.method as HttpMethod, path: e.path.replace(/\$/g, ':') }))
+    // 否则使用默认的推导自文件系统的 GET 路由声明
+    : [{ method: 'GET' as HttpMethod, path: defaultPath.replace(/\$/g, ':') }];
   const refHandler: IRefHandler = {
     default: maybeHandlerFn,
     options: {
       routes,
-      stacks: maybeDeclare?.stacks || []
+      handlers: maybeDeclare?.handlers
     }
   };
   return refHandler;
 }
 
+/**
+ * 查找并加载所有 Handler 模块
+ */
 async function findAllHandlers(config: IAppConfig): Promise<IRefHandler[]> {
-  const handlerDir = getModuleDirPath(config, 'handlers');
-  const handlerFileNames = await findAllModuleFiles(handlerDir);
+  const handlerDirPath = getModuleDirPath(config, 'handlers');
+  const moduleFilePaths = (await findAllModuleFilePaths(handlerDirPath, '*.{js,mjs}')).sort();
   const handlers: IRefHandler[] = [];
-  for (const handlerFileName of handlerFileNames) {
+  for (const handlerFilePath of moduleFilePaths) {
     const handler = await loadHandlerModule({
-      dirName: handlerDir,
-      fileName: handlerFileName
+      dirPath: handlerDirPath,
+      filePath: handlerFilePath
     });
     if (handler) {
       handlers.push(handler);
@@ -88,8 +97,11 @@ async function findAllHandlers(config: IAppConfig): Promise<IRefHandler[]> {
   return handlers;
 }
 
-async function mountRouting(config: IAppConfig): Promise<{
-  handleRequest: (request: http.IncomingMessage, response: http.ServerResponse, serviceLocator: ServiceLocator) => Promise<void>;
+/**
+ * 启动路由子系统
+ */
+async function startRouting(config: IAppConfig): Promise<{
+  handleRequest: (request: http.IncomingMessage, response: http.ServerResponse, serviceLocator: IServiceLocator) => Promise<void>;
   disposeRouter: () => void;
 }> {
   const router = createFindMyWayRouter({
@@ -101,7 +113,7 @@ async function mountRouting(config: IAppConfig): Promise<{
   const noopHandler = (): void => {};
   const handlers = await findAllHandlers(config);
   handlers.forEach(handler => {
-    const composed: ComposedHandler = composeHandlers(handler.options.stacks, handler.default);
+    const composed: ComposedHandler = composeHandlers(handler.options.handlers || [], handler.default);
     handler.options.routes.forEach(route => {
       router.on(route.method, route.path, noopHandler, composed);
     });
@@ -112,7 +124,7 @@ async function mountRouting(config: IAppConfig): Promise<{
       if (!request.url) {
         request.url = '/';
       }
-      const findResult = router.find(request.method as HTTPMethod, request.url);
+      const findResult = router.find(request.method as HttpMethod, request.url);
       let outgoingMessage: OutgoingMessage;
       if (findResult) {
         const { params, store } = findResult;
@@ -126,6 +138,7 @@ async function mountRouting(config: IAppConfig): Promise<{
           outgoingMessage = new OutgoingMessage({ status: 500 });
         }
       } else {
+        createLogger().warn(`route not found: ${request.method} ${request.url}`);
         outgoingMessage = new OutgoingMessage({ status: 404 });
       }
       await outgoingMessage.applyToResponse(response);
@@ -138,9 +151,10 @@ async function mountRouting(config: IAppConfig): Promise<{
 }
 
 export {
-  mountRouting
+  startRouting
 };
 
 export type {
+  HandlerDeclareFn,
   HandlerDeclareResult
 };

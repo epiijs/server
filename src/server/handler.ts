@@ -3,7 +3,7 @@ import http from 'node:http';
 import {
   AnyForOutgoingMessage, IncomingMessage
 } from '@epiijs/httply';
-import type { ServiceLocator } from '@epiijs/inject';
+import type { IServiceLocator } from '@epiijs/inject';
 
 /**
  * Handler 管线输出，本质是可转化 OutgoingMessage 的任意数据
@@ -30,7 +30,7 @@ type HandlerFn = (
   /**
    * 依赖注入访问点，可用于获取依赖实例
    */
-  this: ServiceLocator,
+  this: IServiceLocator,
 
   /**
    * 携带路由参数的入站请求
@@ -45,19 +45,19 @@ type HandlerFn = (
 
 /**
  * 组合后的 Handler 链可调用函数，由 composeHandlers 产生
- * 接收入站请求和 ServiceLocator，返回 HandlerResult（由调用方转换为 OutgoingMessage）
+ * 接收入站请求和 IServiceLocator，返回 HandlerResult（由调用方转换为 OutgoingMessage）
  */
-type ComposedHandler = (message: IncomingMessageWithParams, serviceLocator: ServiceLocator) => Promise<HandlerResult>;
+type ComposedHandler = (message: IncomingMessageWithParams, serviceLocator: IServiceLocator) => Promise<HandlerResult>;
 
 /**
- * 将 stacks 和 defaultHandler 组合为洋葱链，返回 ComposedHandler
- * 每次请求通过 .call() 绑定 ServiceLocator，错误由调用方处理
+ * 将 handlers 处理序列和 defaultHandler 组合为洋葱链，返回 ComposedHandler
+ * 每次请求通过 .call() 绑定 IServiceLocator，错误由调用方处理
  */
 function composeHandlers(
-    stacks: HandlerFn[],
+    handlerFns: HandlerFn[],
     defaultHandler: HandlerFn
 ): ComposedHandler {
-  const chain = stacks.concat(defaultHandler);
+  const chain = handlerFns.concat(defaultHandler);
   return async (message, serviceLocator) => {
     let index = -1;
     async function dispatch(i: number): Promise<HandlerResult> {
@@ -66,7 +66,7 @@ function composeHandlers(
       }
       index = i;
       if (i >= chain.length) {
-        return { status: 204 };
+        return;
       }
       return chain[i].call(serviceLocator, message, () => dispatch(i + 1));
     }

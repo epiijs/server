@@ -1,3 +1,9 @@
+---
+title: V3 设计
+description: V3 架构设计文档（历史参考，已被 V4 全面重构取代）
+last_updated: 2026-07-05
+---
+
 # @epiijs/server 项目概览
 
 HTTP 微服务简单框架，面向 ES Module，适合微服务云上部署和水平伸缩。

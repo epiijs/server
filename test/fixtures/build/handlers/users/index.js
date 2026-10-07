@@ -1,4 +1,4 @@
-// 前置检查 stack
+// 前置处理 handler
 async function withLog(message, next) {
   const result = await next();
   return result;
@@ -10,7 +10,7 @@ export function declare() {
       { method: 'GET', path: '/users' },
       { method: 'GET', path: '/users/:id' },
     ],
-    stacks: [withLog]
+    handlers: [withLog]
   };
 }
 

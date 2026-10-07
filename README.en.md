@@ -1,26 +1,26 @@
 # @epiijs/server
 
-[English](https://github.com/epiijs/server/blob/main/README.en.md)
+[中文](README.md)
 
-一个简单的 server 框架。
+A simple server framework.
 
-- 显式 `declare()` 定义模块发现
-- Koa-like 管线
-- 基于文件系统的路由（不推荐）
-- Service 依赖注入
-- 可插拔日志
+- Explicit `declare()` for module discovery
+- Koa-like pipeline
+- File-system based routing (not recommended)
+- Service dependency injection
+- Pluggable logging
 
-`v4.x` 只支持 ES module。
+`v4.x` is only for ES module.
 
-# 安装
+# Install
 
 ```bash
-npm i --save @epiijs/server
+npm i @epiijs/server --save
 ```
 
-# 用法
+# Usage
 
-## 项目长这样
+## Project like this
 
 ```sh
 (root)
@@ -35,16 +35,16 @@ npm i --save @epiijs/server
 └─ start.ts
 ```
 
-对应的路由结果
+Which routes requests like this
 
 ```
 => /users    (declare routes)
 => /         (filesystem fallback)
 ```
 
-## 启动服务
+## Start server
 
-`startServer` 接收加载解析的完整 `IAppConfig`。
+`startServer` receives the fully resolved `IAppConfig`.
 
 ```ts
 import { getDirNameByImportMeta, importConfig } from '@epiijs/config';
@@ -56,9 +56,9 @@ const config = await importConfig({
 startServer(config);
 ```
 
-## 用 *handler* 处理请求
+## Handle request by *handler*
 
-约定在 `/handlers` 目录下提供请求处理器。推荐用 `declare` 显式注册路由：
+Handlers are provided under `/handlers` by convention. Use `declare` to register routes explicitly:
 
 ```ts
 import {
@@ -83,10 +83,10 @@ export default async function (
 ): Promise<HandlerResult> {
   const { method, params } = message;
 
-  // 简单响应
+  // simple response
   return 'hello world';
 
-  // 自定义响应
+  // custom response
   return {
     status: 400,
     headers: { 'content-type': 'application/json' },
@@ -95,9 +95,9 @@ export default async function (
 }
 ```
 
-## 用 Handler 链组装管线
+## Compose pipeline by handler chain
 
-在 `declare()` 里用 `handlers` 组合 Handler 链（Koa-like 洋葱模型）：
+Use `handlers` in `declare()` to compose the handler chain (Koa-like onion model):
 
 ```ts
 import {
@@ -134,9 +134,9 @@ export default async function (
 }
 ```
 
-## 注入 *service* 作为依赖
+## Inject *service* as dependency
 
-在 `/services` 下提供 service 工厂。
+Provide the service factory under `/services`.
 
 ```ts
 export interface IUserService {
@@ -150,7 +150,7 @@ export default function (services: IServiceLocator): IUserService {
 }
 ```
 
-Handler 内通过 `this`（绑定为 IServiceLocator）取用 service：
+Access service via `this` (bound as IServiceLocator) in handler:
 
 ```ts
 import {
@@ -169,18 +169,18 @@ export default async function (
 }
 ```
 
-## 自定义日志器
+## Custom logger
 
 ```ts
 import { setTransport } from '@epiijs/server';
 
 setTransport((method, ...args) => {
   // method = 'info' | 'error' | 'warn' | 'debug' | 'log' | ...
-  // 转写给业务自己的日志器
+  // route to your logger
 });
 ```
 
-Handler 内通过 `this.appLogger` 取用日志器：
+Access logger via `this.appLogger` in handler:
 
 ```ts
 export default async function (
@@ -192,15 +192,15 @@ export default async function (
 }
 ```
 
-## 从 V3 迁移
+## Migration from V3
 
-### 目录
+### Directory
 
 ```
 actions/   →  handlers/
 ```
 
-### Handler 签名
+### Handler signature
 
 ```ts
 // V3
@@ -221,7 +221,7 @@ export default async function (
 }
 ```
 
-### 管线（useHandler → handlers）
+### Pipeline (useHandler → handlers)
 
 ```ts
 // V3
@@ -233,7 +233,7 @@ await context.useHandler(dispose => {
   dispose(() => console.log('elapsed', Date.now() - start));
 });
 
-// V4：声明 handlers
+// V4: declare handlers
 async function withTiming(this: IServiceLocator, message: IncomingMessageWithParams, next: () => Promise<HandlerResult>) {
   const start = Date.now();
   const result = await next();
@@ -249,11 +249,11 @@ export function declare() {
 }
 ```
 
-### 类型改名
+### Type renames
 
 | V3 | V4 |
 |----|----|
 | `ActionResult` | `HandlerResult` |
 | `ActionFn` | `HandlerFn` |
 | `ActionDeclareResult` | `HandlerDeclareResult` |
-| `Context` | 移除 |
+| `Context` | removed |

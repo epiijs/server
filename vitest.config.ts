@@ -2,11 +2,12 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    globals: true,
-    include: ['test/*.js'],
+    include: ['test/**/*.test.js'],
     coverage: {
       provider: 'v8',
-      reporter: ['lcov', 'text-summary']
+      include: ['build'],
+      reporter: ['lcov', 'text-summary'],
+      thresholds: { statements: 80, branches: 85 }
     }
   }
 });

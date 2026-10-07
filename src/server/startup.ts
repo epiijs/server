@@ -1,38 +1,36 @@
 import http, { Server } from 'node:http';
 
-import verifyConfig, {
-  IMaybeAppConfig
-} from '@epiijs/config';
+import type { IAppConfig } from '@epiijs/config';
 
 import { createLogger } from './logging.js';
-import { mountRouting } from './routing.js';
-import { mountService } from './service.js';
+import { startRouting } from './routing.js';
+import { startServiceManager } from './service.js';
 
 interface IStartupResult {
   httpServer: Server;
 }
 
-async function startServer(config: IMaybeAppConfig): Promise<IStartupResult> {
-  const verifiedConfig = verifyConfig(config);
+async function startServer(config: IAppConfig): Promise<IStartupResult> {
   const logger = createLogger();
 
   const {
     handleRequest,
     disposeRouter
-  } = await mountRouting(verifiedConfig);
+  } = await startRouting(config);
   const {
     createProcessInjector,
     createSessionInjector
-  } = await mountService(verifiedConfig);
+  } = await startServiceManager(config, {
+    builtin: {
+      appConfig: config,
+      appLogger: logger
+    }
+  });
 
   const processInjector = createProcessInjector();
-  processInjector.provide('appConfig', verifiedConfig);
-  processInjector.provide('appLogger', logger);
-
   const httpServer = http.createServer((request, response) => {
     const sessionInjector = createSessionInjector(processInjector);
-
-    handleRequest(request, response, sessionInjector.service() as Record<string, unknown>).catch(error => {
+    handleRequest(request, response, sessionInjector.service()).catch(error => {
       logger.error(error);
     }).finally(() => {
       sessionInjector.dispose();
@@ -45,7 +43,7 @@ async function startServer(config: IMaybeAppConfig): Promise<IStartupResult> {
     logger.info('server closed');
   });
 
-  const serverPort = verifiedConfig.port.server;
+  const serverPort = config.appPort;
   httpServer.listen(serverPort, () => {
     logger.info(`server started on port ${serverPort}`);
   });

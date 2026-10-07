@@ -1,10 +1,16 @@
+---
+title: 日志机制
+description: ILogger、createLogger 单例与可插拔 Transport 的现行实现文档（V4，状态：已批准）
+last_updated: 2026-10-07
+---
+
 # Core: 日志机制
 
-> 状态：草案 | 涉及版本：V4
+> 状态：已批准 | 涉及版本：V4
 
 ## 概述
 
-日志是框架的基础设施。V4 目标：提供统一的日志器入口，支持外部自定义写逻辑，通过 Service 机制让 Handler 和框架内部共用同一实例。
+日志是框架的基础设施。V4 提供统一的日志器入口，支持外部自定义写逻辑，通过 Service 机制让 Handler 和框架内部共用同一实例。
 
 ## 核心概念
 
@@ -97,7 +103,7 @@ appLogger 注册为 Process 级 Service，Handler 通过 `this.appLogger` 获取
 processInjector.provide('appLogger', createLogger());
 
 // Handler 中使用
-export default async function (this: ServiceLocator, message: IncomingMessageWithParams) {
+export default async function (this: IServiceLocator, message: IncomingMessageWithParams) {
   this.appLogger.log('processing request', message.url);
   this.appLogger.error('something went wrong');
   // ...
@@ -146,7 +152,7 @@ setTransport(() => {});
 // routing.ts
 import { createLogger } from './logging.js';
 
-async function mountRouting(config: IAppConfig) {
+async function startRouting(config: IAppConfig) {
   const logger = createLogger();
   logger.log('routing mounted');
 }
@@ -154,25 +160,26 @@ async function mountRouting(config: IAppConfig) {
 // service.ts
 import { createLogger } from './logging.js';
 
-async function mountService(config: IAppConfig) {
+async function startServiceManager(config: IAppConfig, options: { builtin: IServiceLocator }) {
   const logger = createLogger();
   logger.log('service mounted');
 }
 ```
 
-mountRouting 和 mountService 不再需要 logger 参数。
+startRouting 和 startServiceManager 不再需要 logger 参数。
 
 ## 启动流程中的位置
 
 ```
 业务入口
+  → importConfig（+ 可选 verifyConfig）
   → setTransport(customFn)           // 可选，覆盖写逻辑
+  → startServer(config)              // 入参为已定型的完整配置
 
 startServer
-  → verifyConfig
-  → mountRouting(config)                 // 内部 createLogger() 获取单例
-  → mountService(config)                 // 内部 createLogger() 获取单例
-  → processInjector.provide('appLogger', createLogger())  // 注册为 Service
+  → startRouting(config)                       // 内部 createLogger() 获取单例
+  → startServiceManager(config, { builtin })   // 内部 createLogger() 获取单例；builtin 即 appConfig、appLogger
+  → createProcessInjector()                    // 先注册内置，再注册业务；命中内置名的业务服务在扫描阶段已滤除
   → createServer
 ```
 

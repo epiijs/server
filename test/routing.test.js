@@ -1,5 +1,9 @@
-import assert from 'assert';
-import http from 'http';
+import { describe, it, beforeAll, afterAll } from 'vitest';
+import assert from 'node:assert';
+import http from 'node:http';
+import path from 'node:path';
+
+import { importConfig } from '@epiijs/config';
 
 import { startServer } from '../build/index.js';
 
@@ -20,7 +24,12 @@ describe('routing', () => {
   const port = 3002;
 
   beforeAll(async () => {
-    const result = await startServer({ root: './test/fixtures', port: { server: 3002 } });
+    const config = await importConfig({
+      appRoot: path.resolve('./test/fixtures'),
+      appPort: 3002,
+      envData: {}
+    });
+    const result = await startServer(config);
     httpServer = result.httpServer;
     await new Promise(resolve => setTimeout(resolve, 100));
   });
@@ -59,12 +68,48 @@ describe('routing', () => {
     assert.ok(response.body.includes('not found'));
   });
 
+  it('module entry: non-index file with declare() registers route', async () => {
+    const response = await request(port, 'GET', '/declared-nonindex');
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(response.body, 'declared nonindex');
+  });
+
+  it('module entry: plain non-index module without declare() is not registered', async () => {
+    const response = await request(port, 'GET', '/plain');
+    assert.strictEqual(response.status, 404);
+  });
+
+  it('module discovery: non-index .mjs service registers under its declared name', async () => {
+    const response = await request(port, 'GET', '/clock');
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(JSON.parse(response.body), { label: 'from-mjs' });
+  });
+
+  it('builtin reserved name: business service cannot override appConfig', async () => {
+    const response = await request(port, 'GET', '/app-config');
+    assert.strictEqual(response.status, 200);
+    const data = JSON.parse(response.body);
+    assert.strictEqual(data.appRoot, path.resolve('./test/fixtures'));
+  });
+
+  it('builtin reserved name: Session scoped service cannot shadow appConfig either', async () => {
+    const response = await request(port, 'GET', '/app-config-session');
+    assert.strictEqual(response.status, 200);
+    const data = JSON.parse(response.body);
+    assert.strictEqual(data.hijacked, false);
+  });
+
   it('handler throws error → 500 response', async () => {
     const response = await request(port, 'GET', '/throw');
     assert.strictEqual(response.status, 500);
   });
 
-  it('onion chain: stacks + default execute correctly', async () => {
+  it('unregistered service name: container throws, routed as 500', async () => {
+    const response = await request(port, 'GET', '/missing-service');
+    assert.strictEqual(response.status, 500);
+  });
+
+  it('onion chain: handlers + default execute correctly', async () => {
     const response = await request(port, 'GET', '/users');
     assert.strictEqual(response.status, 200);
   });

@@ -1,28 +1,35 @@
+---
+title: 路由机制
+description: declare() 声明与文件系统兜底路由的现行实现文档（V4，状态：已批准）
+last_updated: 2026-10-07
+---
+
 # Core: 路由机制
 
 > 状态：已批准 | 涉及版本：V4
 
 ## 概述
 
-路由是 HTTP 管线的第二步：将入站请求的 `method` + `url` 匹配到具体的 Handler 函数。
+路由是 HTTP 管线的第二步：将入站请求的 `method` + `url` 匹配到具体的 Handler 函数。路由在模块内确定，框架负责匹配。
 
 ```
 入站请求 → 解析 IncomingMessage → 【路由匹配】→ Handler 链执行 → 构造 OutgoingMessage → 出站响应
 ```
 
-路由注册采用 **declare() 声明优先、文件系统兜底** 的策略：
+模块位于概念目录 `handlers/` 下，按顺序命中第一条即注册为路由入口：
 
-```
-每个 Handler 模块的路由 = declare() 存在 ? declare() 声明的路由 : 文件系统路径推导的默认 GET 路由
-```
+1. 导出 `declare()`：路由取自 `declare().routes`，一次可声明多条 `method` + `path`
+2. 文件名为 `index.js` 或 `index.mjs`：路由按模块相对 `handlers/` 的路径推导，方法固定 GET
 
-- `declare()` 声明的路由是推荐的主要方式
-- 文件系统兜底路由仅在模块**未导出 declare()** 时生效
-- 底层使用 find-my-way 高性能路由器
+两条都不满足的模块不注册，作为普通 ES Module 供 `import` 复用，可复用的前置 Handler 因此写成非 index 文件。
+
+- `declare()` 声明是推荐的主要方式，非 GET 的路由必须写 `declare()`（文件路径推不出方法）。
+- 文件系统兜底路由仅在模块**未导出 declare()** 时生效。
+- 底层使用 find-my-way 高性能路由器。
 
 ## declare() 路由声明
 
-Handler 模块通过导出 `declare` 函数显式声明路由。这是推荐的主要路由注册方式。
+Handler 模块通过导出 `declare` 函数显式声明路由。
 
 ### 基本用法
 
@@ -41,7 +48,7 @@ export function declare(): HandlerDeclareResult {
   };
 }
 
-export default async function (this: ServiceLocator, message: IncomingMessageWithParams): Promise<HandlerResult> {
+export default async function (this: IServiceLocator, message: IncomingMessageWithParams): Promise<HandlerResult> {
   const { method, params } = message;
 
   switch (method) {
@@ -61,12 +68,14 @@ export default async function (this: ServiceLocator, message: IncomingMessageWit
 ```typescript
 interface HandlerDeclareResult {
   routes: Array<{
-    method: HTTPMethod;  // 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
+    method: HttpMethod;  // 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
     path: string;        // 路由路径，支持 :param 参数
   }>;
-  stacks?: HandlerFn[];    // 堆叠在 default 之上的 Handler 链
+  handlers?: HandlerFn[];  // 排在 default 之前的处理序列，默认空数组
 }
 ```
+
+`declare()` 未给出的字段用默认值。`handlers` 的数组顺序即管线顺序（外 → 内），数组本身不含 `default`，框架执行逻辑 `handlers.concat(default)`，详见 [core-handler.md](./core-handler.md)。
 
 ### 路由参数
 
@@ -81,7 +90,7 @@ interface HandlerDeclareResult {
 { method: 'GET', path: '/users/$id' }
 ```
 
-匹配到的参数值通过 `IncomingMessageWithParams.params` 获取：
+匹配到的参数值在路由匹配阶段注入 `IncomingMessageWithParams.params`：
 
 ```typescript
 // GET /users/42
@@ -96,8 +105,8 @@ message.params.id  // '42'
 
 - `IncomingMessage.url.pathname` 对应 handlers 目录路径下的 `index.js` 文件
 - 使用 `$` 前缀目录表示路径参数
-- 只查找 `index.js`，其他文件名会被忽略
-- 默认自动添加 GET 方法，不可覆盖
+- 未写 `declare()` 时只查找 `index.js` / `index.mjs`，其他文件名不注册
+- 默认自动添加 GET 方法，不可覆盖，非 GET 的路由必须写 `declare()`
 
 ```
 handlers 目录                   → 推导的默认路由
@@ -122,15 +131,12 @@ export default async function (): Promise<HandlerResult> {
 
 ## 错误处理
 
-框架不提供全局错误处理器机制。错误处理完全由业务代码通过 `stacks` 和 catch-all 路由承接。
+框架提供兜底行为捕获两类错误，捕获后会触发日志操作：路由未命中（404），异常未处理（500）。框架不提供自定义全局错误处理器的专用注册机制。
 
-### Handler 链异常（stacks 最外层）
+可以这样自定义错误响应：
 
-Handler 链内抛出的异常由 stacks 最外层的错误处理 Handler 承接，详见 [core-handler.md](./core-handler.md#错误处理)。
-
-### 404 处理（`/*` catch-all 路由）
-
-路由未命中时 Handler 链不执行，无法通过 stacks 处理。业务可注册 `/*` catch-all 路由来自定义 404 响应：
+- **处理中异常**：在 Handler 用 try/catch 包住自己的实现或 `await next()`，即可承接自己的或内层抛出的错误，最外层的 Handler 可捕获范围最大，详见 [core-handler.md](./core-handler.md#错误处理)。
+- **路由未命中**：404 不经过任何 Handler，只能注册 `/*` catch-all 路由定制，它在更精确路由都不匹配时才命中。
 
 ```typescript
 // handlers/_notfound/index.ts
@@ -140,32 +146,23 @@ export function declare(): HandlerDeclareResult {
   };
 }
 
-export default async function (this: ServiceLocator, message: IncomingMessageWithParams): Promise<HandlerResult> {
+export default async function (this: IServiceLocator, message: IncomingMessageWithParams): Promise<HandlerResult> {
   return { status: 404, content: renderNotFoundPage(message.url) };
 }
 ```
 
 find-my-way 路由优先级为 `static > parametric > wildcard`，`/*` 仅在所有更精确的路由都不匹配时命中，不影响正常路由。
 
-### 框架兜底
-
-框架在路由层提供两个最简兜底：
-- 路由未命中（find-my-way 返回 null）→ 默认 404 响应
-- Handler 链抛出异常且未被 stacks 捕获 → 日志记录 + 默认 500 响应
-
-这是框架的最低保障，如需自定义错误响应，应通过 stacks 错误处理 Handler 或 `/*` catch-all 路由实现。
-
 ## Handler 发现机制
 
-服务启动时，框架自动扫描 handlers 目录发现 Handler 模块：
+服务启动时，框架扫描 `{appRoot}/{appDirs.target}/handlers/` 下的 `**/*.js` 与 `**/*.mjs`，发现 Handler 模块：
 
-1. 扫描 `handlers/`（编译后为 `build/handlers/`）下所有 `**/index.js` 文件
-2. 动态 `import()` 每个模块
-3. 验证 `default` 导出是否为函数
-4. 调用 `declare()` 获取路由声明（如存在）
-5. 将路由注册到 find-my-way 路由器
-
-模块的 `default` 导出必须是 Handler 函数，否则打印错误并跳过该模块。
+1. 动态 `import()` 每个模块
+2. 模块导出 `declare()`：路由取自 `declare().routes`，处理序列取自 `declare().handlers`
+3. 否则文件名为 `index.js` / `index.mjs`：按相对路径推导 GET 路由
+4. 两条都不满足：不注册，作为普通模块
+5. 命中入口但 `default` 非函数：记日志跳过，不注册
+6. 将路由注册到 find-my-way 路由器
 
 ## 底层路由器
 
@@ -182,3 +179,12 @@ find-my-way 提供基于 radix tree 的高性能路由匹配，支持：
 - 参数匹配：`/users/:id`
 - 通配符匹配：`/files/*`
 - 忽略尾部斜杠
+
+匹配结果（含路径参数）连同组合后的管线存入路由 store，请求时经 `router.find()` 取出执行。进程关闭时 dispose 路由。
+
+## 已确认
+
+- 入口条件两条件按序命中其一：`declare()` 优先，index 文件名兜底
+- 非 index 文件导出 `declare()` 同样注册为路由
+- 404 与 500 一样，框架兜底捕获后触发日志
+- 路由根目录固定 `{appRoot}/{appDirs.target}`，产物内无 `server/` 一层
